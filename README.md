@@ -20,9 +20,9 @@ agent 会自动调用本 skill 完成对应操作，并用中文向你汇报。
 | 🩺 状态自检 | `status` | 查看当前绑定 + 服务器可达性，不暴露凭据 |
 | 🔍 搜索影视 | `search` | 走 TMDB / 豆瓣聚合搜索，可按电影/电视剧过滤 |
 | ➕ 添加订阅 | `subscribe-add` | 支持指定季 (`--season`)，自动补全名称/海报 |
-| 📋 订阅列表 | `subscribe-list` | 精简输出：id、名称、年份、季、状态 |
+| 📋 订阅列表 | `subscribe-list` | 分页 + 按类型/关键词/状态过滤，避免一次拉爆 context |
 | ❌ 取消订阅 | `subscribe-del` | 不可逆操作，agent 会先和你确认 |
-| ⬇️ 下载任务 | `downloads` | 当前所有下载任务的进度、速度、大小、状态 |
+| ⬇️ 下载任务 | `downloads` | 分页 + 按状态/关键词过滤，输出进度、速度、大小 |
 | 📦 入库历史 | `history` | 最近整理/入库的剧集和电影记录 |
 | 🧩 已装插件 | `plugins` | 列出 MoviePilot 已安装的插件 |
 | 🛠 任意 API | `raw` | 万能逃生口，调用任何 MoviePilot v2 REST API |
