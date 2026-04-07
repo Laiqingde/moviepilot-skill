@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
-"""MoviePilot CLI for the OpenClaw moviepilot skill.
+"""MoviePilot MCP client for the OpenClaw moviepilot skill.
 
-On first use, run `configure` to bind a MoviePilot instance:
-  mp.py configure --url URL (--api-token TOKEN | --username U --password P)
+Talks to MoviePilot's built-in MCP endpoint (/api/v1/mcp/*), which exposes
+40+ self-describing tools that mirror the official `moviepilot-cli` skill
+shipped in jxxghp/MoviePilot. Compatible tool names: search_media,
+add_subscribe, query_download_tasks, etc.
 
-Auth is then read from config.json next to the skill. Two modes are supported:
-  1. api_token  -> appended as ?token= on every request
-  2. username/password -> POST /login/access-token, JWT cached in jwt.json
+Subcommands:
+  configure --url URL (--api-token TOKEN | --username U --password P)
+  status                     show binding + reachability
+  list                       list all MCP tools
+  show <tool>                show tool description + input schema
+  call <tool> [k=v ...]      invoke an MCP tool with arguments
 
-Other subcommands:
-  status, search, subscribe-add, subscribe-list, subscribe-del,
-  downloads, history, plugins, raw
+Note: list/show/call require api_token (X-API-KEY). username/password
+mode is supported only for status/configure — MCP needs an API key.
 """
 from __future__ import annotations
 
@@ -18,6 +22,7 @@ import argparse
 import json
 import os
 import sys
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -26,6 +31,11 @@ SKILL_DIR = Path(__file__).resolve().parent.parent
 CFG_PATH = SKILL_DIR / "config.json"
 JWT_PATH = SKILL_DIR / "jwt.json"
 
+# warn agent if a single tool result exceeds this many characters
+LARGE_RESULT_WARN = 8000
+
+
+# ---- config -----------------------------------------------------------------
 
 def _read_cfg() -> dict:
     if not CFG_PATH.exists():
@@ -78,35 +88,37 @@ def _get_jwt(cfg: dict, force: bool = False) -> str:
     return _login(cfg["url"].rstrip("/"), cfg["username"], cfg["password"])
 
 
-def request(method: str, path: str, params: dict | None = None, body: dict | None = None) -> object:
+# ---- HTTP -------------------------------------------------------------------
+
+def _http(method: str, full_url: str, headers: dict, body: bytes | None = None) -> bytes:
+    req = urllib.request.Request(full_url, method=method, data=body, headers=headers)
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return resp.read()
+
+
+def _legacy_request(method: str, path: str, params: dict | None = None, body: dict | None = None):
+    """For non-MCP endpoints (login, dashboard) used by status."""
     cfg = _read_cfg()
     url = cfg["url"].rstrip("/")
     q = dict(params or {})
     headers = {"Accept": "application/json"}
     if cfg.get("api_token"):
         q["token"] = cfg["api_token"]
-        retry_on_401 = False
+        retry = False
     else:
         headers["Authorization"] = f"Bearer {_get_jwt(cfg)}"
-        retry_on_401 = True
-
-    def _do(hdrs):
-        full = f"{url}/api/v1{path}?{urllib.parse.urlencode(q, doseq=True)}" if q else f"{url}/api/v1{path}"
-        data = json.dumps(body).encode() if body is not None else None
-        h = dict(hdrs)
-        if data is not None:
-            h["Content-Type"] = "application/json"
-        req = urllib.request.Request(full, method=method, data=data, headers=h)
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            return resp.read()
-
+        retry = True
+    full = f"{url}/api/v1{path}?{urllib.parse.urlencode(q, doseq=True)}" if q else f"{url}/api/v1{path}"
+    data = json.dumps(body).encode() if body is not None else None
+    if data is not None:
+        headers["Content-Type"] = "application/json"
     try:
-        raw = _do(headers)
+        raw = _http(method, full, headers, data)
     except urllib.error.HTTPError as e:
-        if e.code == 401 and retry_on_401:
+        if e.code == 401 and retry:
             headers["Authorization"] = f"Bearer {_get_jwt(cfg, force=True)}"
             try:
-                raw = _do(headers)
+                raw = _http(method, full, headers, data)
             except urllib.error.HTTPError as e2:
                 sys.exit(f"HTTP {e2.code}: {e2.read().decode(errors='replace')[:500]}")
         else:
@@ -119,6 +131,39 @@ def request(method: str, path: str, params: dict | None = None, body: dict | Non
         return raw.decode(errors="replace")
 
 
+def _mcp_request(method: str, sub_path: str, body: dict | None = None):
+    """For MCP endpoints. Requires api_token (X-API-KEY)."""
+    cfg = _read_cfg()
+    if not cfg.get("api_token"):
+        sys.exit(
+            "error: MCP tools require an API key.\n"
+            "Re-run: configure --url <URL> --api-token <TOKEN>\n"
+            "(username/password mode does not work with /api/v1/mcp/*)"
+        )
+    url = cfg["url"].rstrip("/")
+    full = f"{url}/api/v1/mcp{sub_path}"
+    headers = {
+        "Accept": "application/json",
+        "X-API-KEY": cfg["api_token"],
+    }
+    data = None
+    if body is not None:
+        data = json.dumps(body).encode()
+        headers["Content-Type"] = "application/json"
+    try:
+        raw = _http(method, full, headers, data)
+    except urllib.error.HTTPError as e:
+        sys.exit(f"HTTP {e.code}: {e.read().decode(errors='replace')[:500]}")
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return raw.decode(errors="replace")
+
+
+# ---- output -----------------------------------------------------------------
+
 def out(obj) -> None:
     print(json.dumps(obj, ensure_ascii=False, indent=2, default=str))
 
@@ -130,28 +175,37 @@ def cmd_configure(a):
         sys.exit("error: --url is required")
     url = a.url.rstrip("/")
     if a.api_token:
-        cfg = {"url": url, "api_token": a.api_token}
-        _save_cfg(cfg)
-        # verify
+        _save_cfg({"url": url, "api_token": a.api_token})
         try:
-            res = request("GET", "/dashboard/statistic")
-        except SystemExit as e:
+            tools = _mcp_request("GET", "/tools")
+        except SystemExit:
             CFG_PATH.unlink(missing_ok=True)
             raise
-        out({"ok": True, "mode": "api_token", "url": url, "stats": res})
+        out({
+            "ok": True,
+            "mode": "api_token",
+            "url": url,
+            "mcp_tools_count": len(tools) if isinstance(tools, list) else None,
+            "mcp_supported": True,
+        })
         return
     if a.username and a.password:
-        # try login first, only save on success
-        tok = _login(url, a.username, a.password)
-        cfg = {"url": url, "username": a.username, "password": a.password}
-        _save_cfg(cfg)
+        _login(url, a.username, a.password)
+        _save_cfg({"url": url, "username": a.username, "password": a.password})
         try:
-            res = request("GET", "/dashboard/statistic")
+            res = _legacy_request("GET", "/dashboard/statistic")
         except SystemExit:
             CFG_PATH.unlink(missing_ok=True)
             JWT_PATH.unlink(missing_ok=True)
             raise
-        out({"ok": True, "mode": "username_password", "url": url, "stats": res})
+        out({
+            "ok": True,
+            "mode": "username_password",
+            "url": url,
+            "stats": res,
+            "mcp_supported": False,
+            "warning": "MCP tools (list/show/call) need an API key. Re-configure with --api-token to enable them.",
+        })
         return
     sys.exit("error: provide either --api-token, or both --username and --password")
 
@@ -162,160 +216,125 @@ def cmd_status(a):
         return
     cfg = json.loads(CFG_PATH.read_text())
     mode = "api_token" if cfg.get("api_token") else "username_password"
+    info = {"configured": True, "mode": mode, "url": cfg["url"]}
     try:
-        res = request("GET", "/dashboard/statistic")
-        out({"configured": True, "mode": mode, "url": cfg["url"], "reachable": True, "stats": res})
+        if mode == "api_token":
+            tools = _mcp_request("GET", "/tools")
+            info["reachable"] = True
+            info["mcp_tools_count"] = len(tools) if isinstance(tools, list) else None
+        else:
+            stats = _legacy_request("GET", "/dashboard/statistic")
+            info["reachable"] = True
+            info["stats"] = stats
+            info["mcp_supported"] = False
     except SystemExit as e:
-        out({"configured": True, "mode": mode, "url": cfg["url"], "reachable": False, "error": str(e)})
+        info["reachable"] = False
+        info["error"] = str(e)
+    out(info)
 
 
-def cmd_search(a):
-    res = request("GET", "/media/search", {"title": a.query})
-    if isinstance(res, list):
-        if a.type:
-            want = "电影" if a.type == "movie" else "电视剧"
-            res = [r for r in res if r.get("type") == want]
-        res = res[: a.limit]
-        # trim to essentials
-        slim = [
-            {
-                "tmdb_id": r.get("tmdb_id"),
-                "type": r.get("type"),
-                "title": r.get("title"),
-                "year": r.get("year"),
-                "original_title": r.get("original_title"),
-                "vote": r.get("vote_average"),
-                "overview": (r.get("overview") or "")[:160],
-            }
-            for r in res
-        ]
-        out(slim)
-    else:
-        out(res)
-
-
-def cmd_subscribe_add(a):
-    body = {
-        "name": a.name or "",
-        "tmdbid": int(a.tmdbid),
-        "type": "电影" if a.type == "movie" else "电视剧",
-    }
-    if a.season is not None:
-        body["season"] = a.season
-    # MoviePilot needs name; if not provided, look it up.
-    if not body["name"]:
-        info = request("GET", f"/tmdb/{a.tmdbid}", {"type": body["type"]})
-        if isinstance(info, dict):
-            body["name"] = info.get("title") or info.get("name") or ""
-            body.setdefault("year", info.get("year") or "")
-            body.setdefault("poster", info.get("poster_path") or "")
-    out(request("POST", "/subscribe/", body=body))
-
-
-def cmd_subscribe_list(a):
-    res = request("GET", "/subscribe/")
-    if not isinstance(res, list):
-        out(res)
+def cmd_list(a):
+    tools = _mcp_request("GET", "/tools")
+    if not isinstance(tools, list):
+        out(tools)
         return
-    items = res
-    if a.type:
-        want = "电影" if a.type == "movie" else "电视剧"
-        items = [r for r in items if r.get("type") == want]
-    if a.keyword:
-        kw = a.keyword.lower()
-        items = [r for r in items if kw in (r.get("name") or "").lower()]
-    if a.state:
-        items = [r for r in items if (r.get("state") or "") == a.state]
-    total = len(items)
-    page = max(1, a.page)
-    start = (page - 1) * a.limit
-    page_items = items[start : start + a.limit]
+    # group by category by name prefix when possible; otherwise just list
     slim = [
         {
-            "id": r.get("id"),
-            "name": r.get("name"),
-            "year": r.get("year"),
-            "type": r.get("type"),
-            "season": r.get("season"),
-            "tmdbid": r.get("tmdbid"),
-            "state": r.get("state"),
+            "name": t.get("name"),
+            "description": (t.get("description") or "").split(".")[0][:140],
         }
-        for r in page_items
+        for t in tools
     ]
-    out({
-        "total": total,
-        "page": page,
-        "limit": a.limit,
-        "returned": len(slim),
-        "items": slim,
-    })
-
-
-def cmd_subscribe_del(a):
-    out(request("DELETE", f"/subscribe/{a.id}"))
-
-
-def cmd_downloads(a):
-    res = request("GET", "/download/")
-    if not isinstance(res, list):
-        out(res)
-        return
-    items = res
-    if a.state:
-        items = [r for r in items if (r.get("state") or "") == a.state]
     if a.keyword:
         kw = a.keyword.lower()
-        items = [
-            r for r in items
-            if kw in (r.get("name") or "").lower()
-            or kw in (r.get("title") or "").lower()
-        ]
-    total = len(items)
-    items = items[: a.limit]
-    slim = [
-        {
-            "name": r.get("name"),
-            "season_episode": r.get("season_episode"),
-            "progress": round(float(r.get("progress") or 0), 3),
-            "state": r.get("state"),
-            "dlspeed": r.get("dlspeed"),
-            "size_mb": round((r.get("size") or 0) / 1024 / 1024, 1),
-            "hash": (r.get("hash") or "")[:12],
-        }
-        for r in items
-    ]
-    out({"total": total, "returned": len(slim), "limit": a.limit, "items": slim})
-
-
-def cmd_history(a):
-    res = request("GET", "/history/transfer", {"page": a.page, "count": a.count})
-    if isinstance(res, dict) and "data" in res:
-        items = (res.get("data") or {}).get("list") or []
         slim = [
-            {
-                "id": i.get("id"),
-                "title": i.get("title"),
-                "category": i.get("category"),
-                "seasons": i.get("seasons"),
-                "episodes": i.get("episodes"),
-                "status": i.get("status"),
-                "date": i.get("date"),
-                "dest": i.get("dest"),
-            }
-            for i in items
+            t for t in slim
+            if kw in (t["name"] or "").lower() or kw in (t["description"] or "").lower()
         ]
-        out({"total": (res.get("data") or {}).get("total"), "items": slim})
+    out({"total": len(slim), "tools": slim})
+
+
+def cmd_show(a):
+    tool = _mcp_request("GET", f"/tools/{a.name}")
+    if isinstance(tool, dict):
+        # strip noise
+        schema = tool.get("inputSchema") or {}
+        props = schema.get("properties") or {}
+        required = set(schema.get("required") or [])
+        params = []
+        for pname, pdef in props.items():
+            params.append({
+                "name": pname,
+                "required": pname in required,
+                "type": pdef.get("type"),
+                "description": (pdef.get("description") or "")[:200],
+                "enum": pdef.get("enum"),
+                "default": pdef.get("default"),
+            })
+        out({
+            "name": tool.get("name"),
+            "description": tool.get("description"),
+            "parameters": params,
+        })
+    else:
+        out(tool)
+
+
+def _coerce(value: str):
+    """Coerce 'k=v' string into JSON-typed value: int, float, bool, json, or str."""
+    if value.lower() in ("true", "false"):
+        return value.lower() == "true"
+    if value.lower() in ("null", "none"):
+        return None
+    # JSON literal (object/array/quoted)
+    if value and value[0] in "{[\"":
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            pass
+    # number
+    try:
+        if "." in value:
+            return float(value)
+        return int(value)
+    except ValueError:
+        pass
+    return value
+
+
+def cmd_call(a):
+    args = {}
+    for kv in a.kv:
+        if "=" not in kv:
+            sys.exit(f"error: arg '{kv}' is not key=value")
+        k, v = kv.split("=", 1)
+        args[k] = _coerce(v)
+    # always provide an explanation if not given (some MCP tools require it)
+    args.setdefault("explanation", f"openclaw moviepilot skill: {a.name}")
+
+    body = {"tool_name": a.name, "arguments": args}
+    res = _mcp_request("POST", "/tools/call", body=body)
+
+    # MCP returns {success, result} where result may be a JSON-encoded string
+    if isinstance(res, dict) and "result" in res:
+        result = res["result"]
+        if isinstance(result, str):
+            try:
+                result = json.loads(result)
+            except json.JSONDecodeError:
+                pass
+        rendered = json.dumps(result, ensure_ascii=False, indent=2, default=str)
+        if len(rendered) > LARGE_RESULT_WARN:
+            sys.stderr.write(
+                f"# token-warning: tool '{a.name}' returned {len(rendered)} chars "
+                f"(~{len(rendered)//2} tokens). Consider narrower filters.\n"
+            )
+        print(rendered)
+        if not res.get("success", True):
+            sys.exit(2)
     else:
         out(res)
-
-
-def cmd_plugins(a):
-    out(request("GET", "/plugin/installed"))
-
-
-def cmd_raw(a):
-    body = json.loads(a.json) if a.json else None
-    out(request(a.method.upper(), a.path, body=body))
 
 
 # ---- argparse ---------------------------------------------------------------
@@ -331,53 +350,21 @@ def main():
     s.add_argument("--password")
     s.set_defaults(func=cmd_configure)
 
-    s = sub.add_parser("status", help="show current binding + reachability")
+    s = sub.add_parser("status", help="show binding + reachability")
     s.set_defaults(func=cmd_status)
 
-    s = sub.add_parser("search", help="search movies/tv")
-    s.add_argument("query")
-    s.add_argument("--type", choices=["movie", "tv"])
-    s.add_argument("--limit", type=int, default=10)
-    s.set_defaults(func=cmd_search)
+    s = sub.add_parser("list", help="list all MCP tools")
+    s.add_argument("--keyword", help="substring filter on name/description")
+    s.set_defaults(func=cmd_list)
 
-    s = sub.add_parser("subscribe-add", help="add a subscription")
-    s.add_argument("tmdbid")
-    s.add_argument("--type", choices=["movie", "tv"], required=True)
-    s.add_argument("--season", type=int)
-    s.add_argument("--name")
-    s.set_defaults(func=cmd_subscribe_add)
+    s = sub.add_parser("show", help="show a tool's parameter schema")
+    s.add_argument("name")
+    s.set_defaults(func=cmd_show)
 
-    s = sub.add_parser("subscribe-list", help="list subscriptions (paged + filtered)")
-    s.add_argument("--limit", type=int, default=30)
-    s.add_argument("--page", type=int, default=1)
-    s.add_argument("--type", choices=["movie", "tv"])
-    s.add_argument("--keyword")
-    s.add_argument("--state", help="filter by state, e.g. R/N/P")
-    s.set_defaults(func=cmd_subscribe_list)
-
-    s = sub.add_parser("subscribe-del", help="delete a subscription")
-    s.add_argument("id")
-    s.set_defaults(func=cmd_subscribe_del)
-
-    s = sub.add_parser("downloads", help="show active downloads (paged + filtered)")
-    s.add_argument("--limit", type=int, default=20)
-    s.add_argument("--state", help="downloading|stalledDL|pausedDL|...")
-    s.add_argument("--keyword")
-    s.set_defaults(func=cmd_downloads)
-
-    s = sub.add_parser("history", help="show transfer/library history")
-    s.add_argument("--page", type=int, default=1)
-    s.add_argument("--count", type=int, default=20)
-    s.set_defaults(func=cmd_history)
-
-    s = sub.add_parser("plugins", help="list installed plugins")
-    s.set_defaults(func=cmd_plugins)
-
-    s = sub.add_parser("raw", help="raw API call")
-    s.add_argument("method")
-    s.add_argument("path")
-    s.add_argument("--json")
-    s.set_defaults(func=cmd_raw)
+    s = sub.add_parser("call", help="invoke an MCP tool")
+    s.add_argument("name")
+    s.add_argument("kv", nargs="*", help="key=value arguments")
+    s.set_defaults(func=cmd_call)
 
     args = p.parse_args()
     args.func(args)

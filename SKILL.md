@@ -1,110 +1,110 @@
 ---
 name: moviepilot
-description: Control a MoviePilot media-automation server. Use whenever the human asks to search a movie or TV show, subscribe/unsubscribe, check active downloads, or check what was recently organized into the library. Wraps the MoviePilot v2 REST API via a small Python CLI.
+description: Control a remote MoviePilot media-automation server through its built-in MCP endpoint. Compatible with the official moviepilot-cli skill (same tool names). Use whenever the human mentions movies, TV shows, anime, downloads, subscriptions, library, or MoviePilot. Talks to /api/v1/mcp/* via a small Python CLI.
 metadata: {"openclaw":{"requires":{"bins":["python3"]},"primaryEnv":"MP_URL"}}
 ---
 
 # MoviePilot
 
-You can control a MoviePilot server through the CLI at
-`{baseDir}/scripts/mp.py`. All commands print JSON to stdout — always parse
-and summarize results for the human in plain Chinese, do not dump raw JSON
-unless asked.
+This skill is a thin wrapper around MoviePilot's MCP tool registry
+(`/api/v1/mcp/*`). The remote server exposes 40+ self-describing tools
+(`search_media`, `add_subscribe`, `query_download_tasks`, …). Tool names
+are identical to the official `moviepilot-cli` skill bundled in
+`jxxghp/MoviePilot`.
 
-## FIRST-RUN: configure binding (MANDATORY)
+CLI: `python3 {baseDir}/scripts/mp.py`
 
-**The very first time this skill is loaded in a conversation, your first
-action MUST be to check the binding and, if missing, ask the human to
-provide their MoviePilot connection.** Do not call any other subcommand
+All output is JSON on stdout. Always summarize results for the human in
+plain Chinese — never dump raw JSON unless the human asks.
+
+## FIRST-RUN: bind a MoviePilot instance (MANDATORY)
+
+The very first time this skill is loaded in a conversation, your first
+action MUST be to check the binding. Do not call any other subcommand
 before configuration succeeds.
 
-Step 1 — check status:
 ```bash
 python3 {baseDir}/scripts/mp.py status
 ```
 
-Step 2 — if `configured: false`, send the human exactly this message in
-Chinese and then STOP and wait for their reply:
+If `configured: false`, send the human exactly this message and STOP:
 
-> 检测到 MoviePilot 还没有绑定。请发送以下信息完成绑定：
-> 1. MoviePilot 地址（例如 `http://192.168.1.10:3000`）
-> 2. 认证方式二选一：
->    - **API Token**（在 MoviePilot 设置 → 系统 → API 令牌 中获取），或
->    - **用户名 + 密码**
+> 检测到 MoviePilot 还没有绑定。请发送以下信息：
+> 1. MoviePilot 地址（如 `http://192.168.1.10:3000`）
+> 2. 认证方式：
+>    - **推荐：API Key**（MoviePilot 设置 → 系统 → API 令牌），开启 MCP 全部 40+ 工具
+>    - 用户名 + 密码（仅可用 status，**MCP 工具不可用**）
 
-Step 3 — once the human replies with the URL and either an api-token OR
-username+password, run ONE of:
+Then run:
 
 ```bash
-# 方式 A: API token
-python3 {baseDir}/scripts/mp.py configure --url <URL> --api-token <TOKEN>
-
-# 方式 B: 用户名 / 密码
+python3 {baseDir}/scripts/mp.py configure --url <URL> --api-token <KEY>
+# 或
 python3 {baseDir}/scripts/mp.py configure --url <URL> --username <U> --password <P>
 ```
 
-`configure` writes `{baseDir}/config.json` (chmod 600) and verifies the
-binding by calling `/dashboard/statistic`. On success, report to the human
-in Chinese: 绑定成功 + 服务器统计（电影/电视剧/集数/用户数）。On failure,
-show the exact error and ask the human to re-check URL and credentials.
+`configure` writes `{baseDir}/config.json` (chmod 600), verifies the
+binding by listing MCP tools, and reports tool count + URL. Re-running
+overwrites the existing config (used for re-binding / switching server).
 
-If the human asks to re-bind / change server / 重新配置, just run
-`configure` again — it overwrites the existing config.
-
-## When to use this skill
-
-- 用户提到电影、电视剧、番剧、动漫、纪录片，并希望搜索 / 订阅 / 下载 / 整理
-- 用户问"最近下载了什么 / 下载进度 / 入库情况"
-- 用户想查看或取消现有订阅
-- 用户提到 MoviePilot / mp / 媒体服务器订阅
-- 用户想绑定 / 重新绑定 / 更换 MoviePilot 实例
-
-## Commands (require an existing binding)
+## Core subcommands
 
 ```bash
-# 0. 查看绑定状态（不会暴露凭据）
-python3 {baseDir}/scripts/mp.py status
+# 列出所有可用工具（默认 40 个，支持关键词过滤）
+mp.py list                      # 全部
+mp.py list --keyword subscribe  # 仅含 "subscribe" 的工具
 
-# 1. 搜索
-python3 {baseDir}/scripts/mp.py search "流浪地球" [--type movie|tv] [--limit 10]
+# 查看某个工具的参数 schema（参数名不可猜，调用前必须先 show）
+mp.py show search_media
+mp.py show add_subscribe
 
-# 2. 订阅 (tmdbid 来自 search 结果)
-python3 {baseDir}/scripts/mp.py subscribe-add 535167 --type movie
-python3 {baseDir}/scripts/mp.py subscribe-add 218642 --type tv --season 1
-
-# 3. 订阅列表 / 删除（默认每页 30，支持过滤，避免一次拉爆 context）
-python3 {baseDir}/scripts/mp.py subscribe-list [--limit 30] [--page 1] \
-    [--type movie|tv] [--keyword 三体] [--state R]
-python3 {baseDir}/scripts/mp.py subscribe-del 29
-
-# 4. 当前下载任务（默认 limit 20，支持按状态/关键词过滤）
-python3 {baseDir}/scripts/mp.py downloads [--limit 20] \
-    [--state downloading|stalledDL|pausedDL] [--keyword 三体]
-
-# 5. 入库 / 整理历史
-python3 {baseDir}/scripts/mp.py history [--page 1] [--count 20]
-
-# 6. 已安装插件列表
-python3 {baseDir}/scripts/mp.py plugins
-
-# 7. 万能逃生口 (任意 MoviePilot API)
-python3 {baseDir}/scripts/mp.py raw GET /dashboard/statistic
-python3 {baseDir}/scripts/mp.py raw POST /subscribe/ --json '{"name":"x","tmdbid":1,"type":"电影"}'
+# 调用任意工具，参数用 key=value 风格（自动类型推断）
+mp.py call search_media title=流浪地球 media_type=电影
+mp.py call query_subscribes status=R
+mp.py call add_subscribe title=三体 year=2023 media_type=电视剧 tmdb_id=108545 season=1
 ```
+
+参数值类型推断规则：
+- `true` / `false` → bool
+- `null` → null
+- 纯数字 → int / float
+- `{...}` / `[...]` / `"..."` → JSON 解析
+- 其他 → 字符串
+
+## Workflow rules (READ CAREFULLY)
+
+1. **调用前必须先 `show`**：参数名不能猜。即使是熟悉的工具也要 `show` 一次，因为 MoviePilot 升级后参数可能变。
+2. **搜索 → 订阅 / 下载 流程**：
+   - 先 `call search_media title=...` 拿到 `tmdb_id`
+   - 加订阅前先 `call query_subscribes tmdb_id=...` 和 `call query_library_exists tmdb_id=... media_type=...` 检查是否重复
+   - 用户指定季时，先用 `query_media_detail` 验证季号（部分剧集 TMDB 季号与中文社区不同）
+3. **不可逆操作必须确认**：`delete_subscribe`、`delete_download`、`delete_download delete_files=true`、`update_site_cookie`、`run_scheduler`、`run_workflow`、`scrape_metadata`、`transfer_file` 调用前先告知用户具体内容并等待确认。
+4. **种子下载多步交互**：
+   - `search_torrents` 返回 `filter_options` 后**停下**，把所有 filter 字段和值原样列给用户，等用户选完再 `get_search_results`
+   - 不要自己挑、不要翻译枚举值
+5. **中文汇报**：所有 JSON 结果用中文摘要给用户，仅在用户要求时才显示原始 JSON。
 
 ## Token efficiency
 
-- `subscribe-list` 和 `downloads` 都是分页的。**永远不要为了"看全部"而把 limit 调到很大**——
-  先用默认 limit 看 `total`，再按需 `--keyword` / `--type` / `--state` 过滤，或翻 `--page`。
-- 用户问"我订了什么《三体》" → `subscribe-list --keyword 三体`，不要全量拉。
-- 用户问"现在在下什么" → `downloads --state downloading`，不要全量拉。
-- 用户问"全部订阅有多少" → 直接看返回里的 `total` 字段，不要为了数数翻完所有页。
+- 工具结果可能很大。CLI 在结果超过 8000 字符时会在 stderr 打印 `# token-warning`，看到就主动收窄过滤条件。
+- 列订阅 / 列下载时**永远先用过滤参数**：
+  - `call query_subscribes status=R` （只看运行中）
+  - `call query_subscribes type=电视剧`
+  - `call query_download_tasks status=downloading`
+- 用户问"我订了多少" / "在下多少" → 先 call 一次拿数量，**不要把全部条目都列给用户**。
+- 用户没指定数量时默认 10 条以内。
+- `list` 命令本身只回 `name + description first sentence`，已经很轻；要看参数再 `show`。
 
-## Workflow rules
+## Security
 
-1. **订阅前必须先 search**，拿到准确的 `tmdb_id` 和 `type`，再调用 `subscribe-add`，避免订错条目。
-2. 用户说“订阅 X 第 2 季”时，`--type tv --season 2`。不指定季时不要加 `--season`。
-3. 调用 `subscribe-del` 这类不可逆操作前，向用户确认（显示将要删除的订阅名+id）。
-4. 不要把 API token、密码、`config.json` 或 `jwt.json` 内容回显给用户或写入日志。
-5. 报错时把 stderr 原文展示给用户，不要自行编造修复方案。
-6. 如果任何子命令返回 `MoviePilot is not configured yet`，回到首次配置流程。
+- 永远不要回显 API key、密码、`config.json`、`jwt.json` 内容。
+- 子命令报错就把 stderr 原文给用户，不要自行编造修复方案。
+- 任何子命令返回 `MoviePilot is not configured yet` 时，回到首次配置流程。
+
+## Compatibility
+
+- 工具名与 [`jxxghp/MoviePilot/skills/moviepilot-cli`](https://github.com/jxxghp/MoviePilot/tree/main/skills/moviepilot-cli) 完全一致。两边参考资料通用。
+- 与官方 skill 的差异：
+  - 官方假设 agent 跑在 MoviePilot 容器内部（Node.js）
+  - 本 skill 假设 agent 跑在外部客户端，**通过 HTTP 远程操控**（Python 标准库，零依赖）
+  - 增加首次绑定向导和 token 过载预警

@@ -1,33 +1,62 @@
 # moviepilot-skill
 
-一个 [OpenClaw](https://github.com/openclaw/openclaw) 原生 skill，让你的 OpenClaw agent 可以直接操控 [MoviePilot](https://github.com/jxxghp/MoviePilot) 媒体自动化服务器：搜索影视、添加/管理订阅、查看下载进度、检查入库历史、调用任意 MoviePilot API。
+一个 [OpenClaw](https://github.com/openclaw/openclaw) 原生 skill，让你的 OpenClaw agent 通过 **MoviePilot 内置的 MCP 端点**远程操控 [MoviePilot](https://github.com/jxxghp/MoviePilot) 媒体自动化服务器。
 
-> 装上之后，你可以直接对 OpenClaw agent 说：
-> - "帮我订阅《三体》第二季"
-> - "现在 MoviePilot 在下什么？"
-> - "今天入库了哪些剧集？"
-> - "把师兄啊师兄的订阅取消掉"
+> **与 MoviePilot 官方 `moviepilot-cli` skill 完全工具兼容**：使用同一套自描述的 40+ 工具（`search_media` / `add_subscribe` / `query_download_tasks` …），但用 Python 标准库零依赖实现，并增加了首次绑定向导、远程访问支持和 token 过载预警。
 
-agent 会自动调用本 skill 完成对应操作，并用中文向你汇报。
+装上之后，你可以直接对 OpenClaw agent 说：
+
+- "帮我搜《流浪地球》并加入订阅"
+- "现在 MoviePilot 在下什么？只看正在下载的"
+- "今天入库了哪些剧集？"
+- "把师兄啊师兄的订阅取消掉"
+- "搜下《沙丘 2》能不能下，找 1080p 免费的"
+
+agent 会自动用中文向你汇报。
 
 ---
 
-## ✨ 功能特性
+## ✨ 设计理念
 
-| 能力 | 子命令 | 说明 |
+| | 本 skill | 官方 `moviepilot-cli` |
 | --- | --- | --- |
-| 🔐 首次绑定 | `configure` | 支持 API Token 或 用户名+密码 两种认证方式，凭据本地保存（chmod 600） |
-| 🩺 状态自检 | `status` | 查看当前绑定 + 服务器可达性，不暴露凭据 |
-| 🔍 搜索影视 | `search` | 走 TMDB / 豆瓣聚合搜索，可按电影/电视剧过滤 |
-| ➕ 添加订阅 | `subscribe-add` | 支持指定季 (`--season`)，自动补全名称/海报 |
-| 📋 订阅列表 | `subscribe-list` | 分页 + 按类型/关键词/状态过滤，避免一次拉爆 context |
-| ❌ 取消订阅 | `subscribe-del` | 不可逆操作，agent 会先和你确认 |
-| ⬇️ 下载任务 | `downloads` | 分页 + 按状态/关键词过滤，输出进度、速度、大小 |
-| 📦 入库历史 | `history` | 最近整理/入库的剧集和电影记录 |
-| 🧩 已装插件 | `plugins` | 列出 MoviePilot 已安装的插件 |
-| 🛠 任意 API | `raw` | 万能逃生口，调用任何 MoviePilot v2 REST API |
+| 运行时 | Python 3 标准库（零依赖） | Node.js |
+| 工具来源 | MoviePilot `/api/v1/mcp/tools`（自描述，40+ 工具） | 同上 |
+| 工具命名 | 与官方完全一致 | — |
+| 部署位置 | OpenClaw 客户端本机，**远程操控**任意 MP 实例 | 假设跑在 MP 容器内部 |
+| 首次绑定 | **交互式向导**（agent 主动问你要 URL + Key） | CLI 参数 |
+| 多实例切换 | 重新 `configure` 即可 | — |
+| Token 过载预警 | ✅ 单次结果超 8k 字符自动 stderr 警告 | ❌ |
+| 认证 | API Key（推荐） / 用户名密码 | API Key |
 
-零外部依赖，仅使用 Python 3 标准库。
+---
+
+## 🧩 工具一览
+
+skill 本身不内置业务命令，只提供 4 个发现/调用入口；所有 40+ 业务工具来自 MoviePilot 自身：
+
+| 子命令 | 说明 |
+| --- | --- |
+| `configure` | 首次绑定 MoviePilot 实例 |
+| `status` | 查看当前绑定 + 可达性 + MCP 工具数 |
+| `list [--keyword X]` | 列出全部 MCP 工具（关键词过滤） |
+| `show <tool>` | 显示某工具的参数 schema |
+| `call <tool> [k=v ...]` | 调用任意 MCP 工具 |
+
+调用前 agent 会先 `show <tool>` 自动发现参数名，永远不会瞎猜。
+
+### MoviePilot 提供的工具分类（实例不同数量略有差异）
+
+| 类别 | 示例工具 |
+| --- | --- |
+| 媒体搜索 | `search_media`、`recognize_media`、`query_media_detail`、`get_recommendations`、`search_person` |
+| 种子搜索 | `search_torrents`、`get_search_results` |
+| 下载管理 | `add_download`、`query_download_tasks`、`delete_download`、`query_downloaders` |
+| 订阅管理 | `add_subscribe`、`query_subscribes`、`update_subscribe`、`delete_subscribe`、`search_subscribe` |
+| 媒体库 | `query_library_exists`、`query_library_latest`、`transfer_file`、`scrape_metadata`、`query_transfer_history` |
+| 文件 | `list_directory`、`query_directory_settings` |
+| 站点 | `query_sites`、`query_site_userdata`、`test_site`、`update_site_cookie` |
+| 系统 | `query_schedulers`、`run_scheduler`、`query_workflows`、`run_workflow`、`query_episode_schedule`、`send_message` |
 
 ---
 
@@ -42,16 +71,16 @@ git clone https://github.com/Laiqingde/moviepilot-skill.git ~/.openclaw/skills/m
 ### 2. 重启 OpenClaw agent
 
 ```bash
-openclaw agent --message "测试 moviepilot skill"
+openclaw agent --message "帮我配置一下 MoviePilot"
 ```
 
-第一次触发本 skill 时，agent 会自动检测到尚未绑定，并主动向你索要 MoviePilot 连接信息。
+第一次触发本 skill 时，agent 会自动检测到尚未绑定，并主动向你索要连接信息。
 
 ### 3. 系统要求
 
 - macOS / Linux
-- Python 3.8+（系统自带即可，无需 `pip install` 任何东西）
-- 一台可访问的 MoviePilot v2 实例
+- Python 3.8+（系统自带，**无需 pip install 任何东西**）
+- 一台可访问的 **MoviePilot v2** 实例，且开启了 MCP 端点（默认开启）
 
 ---
 
@@ -59,61 +88,54 @@ openclaw agent --message "测试 moviepilot skill"
 
 ### 方式 A：让 agent 引导你（推荐）
 
-直接告诉 agent："帮我配置 moviepilot"或者直接发起一个媒体相关请求。agent 会发出如下提示：
+直接说"帮我配置 moviepilot"，agent 会发出：
 
-> 检测到 MoviePilot 还没有绑定。请发送以下信息完成绑定：
-> 1. MoviePilot 地址（例如 `http://192.168.1.10:3000`）
-> 2. 认证方式二选一：
->    - **API Token**（在 MoviePilot 设置 → 系统 → API 令牌 中获取），或
->    - **用户名 + 密码**
+> 检测到 MoviePilot 还没有绑定。请发送以下信息：
+> 1. MoviePilot 地址（如 `http://192.168.1.10:3000`）
+> 2. 认证方式：
+>    - **推荐：API Key**（MoviePilot 设置 → 系统 → API 令牌），开启全部 40+ MCP 工具
+>    - 用户名 + 密码（仅可用 status，**MCP 工具不可用**）
 
-你只需要回复这些信息，agent 就会自动调用 `configure`、验证连通性，并汇报服务器统计（电影数 / 电视剧数 / 集数 / 用户数）。
+回复后 agent 自动完成绑定、验证 MCP 可达，并汇报工具数量。
 
-### 方式 B：手动命令行绑定
+### 方式 B：手动 CLI 绑定
 
 ```bash
-# 用 API Token 绑定（推荐，权限可控）
+# 推荐：API Key（开启 MCP 全部工具）
 python3 ~/.openclaw/skills/moviepilot/scripts/mp.py configure \
-  --url http://YOUR_HOST:3000 \
-  --api-token YOUR_API_TOKEN
+  --url http://YOUR_HOST:3000 --api-token YOUR_API_KEY
 
-# 或者用用户名 / 密码绑定
+# 仅有用户密码（MCP 不可用）
 python3 ~/.openclaw/skills/moviepilot/scripts/mp.py configure \
-  --url http://YOUR_HOST:3000 \
-  --username YOUR_USERNAME \
-  --password YOUR_PASSWORD
+  --url http://YOUR_HOST:3000 --username U --password P
 ```
 
-绑定成功后会输出类似：
+成功输出示例：
 
 ```json
 {
   "ok": true,
   "mode": "api_token",
   "url": "http://YOUR_HOST:3000",
-  "stats": {
-    "movie_count": 16084,
-    "tv_count": 7581,
-    "episode_count": 305802,
-    "user_count": 4270
-  }
+  "mcp_tools_count": 40,
+  "mcp_supported": true
 }
 ```
 
 ### 重新绑定 / 切换实例
 
-直接再次运行 `configure`，会覆盖原有 `config.json`。也可以让 agent 帮你做："换一台 MoviePilot 服务器"。
+直接再次运行 `configure`，会覆盖原有 `config.json`。
 
 ---
 
 ## 🔐 凭据安全
 
-- 凭据保存在 `~/.openclaw/skills/moviepilot/config.json`，文件权限为 `600`（仅当前用户可读写）
-- 用户名/密码模式下，登录拿到的 JWT 缓存在 `jwt.json`，遇到 401 自动重新登录
-- `config.json` / `jwt.json` 已加入 `.gitignore`，**不会被 commit 到任何 git 仓库**
-- skill 在 `SKILL.md` 中明确告诉 agent：**永远不要回显 token、密码或这两个文件的内容**
+- 凭据保存在 `~/.openclaw/skills/moviepilot/config.json`，权限 `600`
+- 用户名/密码模式下 JWT 缓存到 `jwt.json`，401 自动重新登录
+- `config.json` / `jwt.json` 已加入 `.gitignore`，不会被 commit
+- SKILL.md 明确指示 agent **永远不要回显 token / 密码 / 这两个文件的内容**
 
-如需手动清除绑定：
+清除绑定：
 
 ```bash
 rm ~/.openclaw/skills/moviepilot/config.json ~/.openclaw/skills/moviepilot/jwt.json
@@ -123,125 +145,93 @@ rm ~/.openclaw/skills/moviepilot/config.json ~/.openclaw/skills/moviepilot/jwt.j
 
 ## 📖 命令速查
 
-所有命令都通过 `python3 ~/.openclaw/skills/moviepilot/scripts/mp.py <子命令>` 调用，输出为 JSON。
-
-### 配置管理
-
 ```bash
-mp.py status                                       # 查看绑定状态
-mp.py configure --url URL --api-token TOKEN        # 绑定 (token 模式)
-mp.py configure --url URL --username U --password P  # 绑定 (账号模式)
+# === 配置 ===
+mp.py status                                        # 查看绑定
+mp.py configure --url URL --api-token KEY           # 绑定 (推荐)
+mp.py configure --url URL --username U --password P # 绑定 (仅 status 可用)
+
+# === 工具发现 ===
+mp.py list                                          # 列出全部 40+ 工具
+mp.py list --keyword subscribe                      # 关键词过滤
+
+# === 查参数 ===
+mp.py show search_media
+mp.py show add_subscribe
+
+# === 调用 ===
+mp.py call search_media title=流浪地球 media_type=电影
+mp.py call query_subscribes status=R
+mp.py call query_download_tasks status=downloading
+mp.py call add_subscribe title=三体 year=2023 media_type=电视剧 tmdb_id=108545 season=1
+mp.py call delete_subscribe subscribe_id=29
 ```
 
-### 搜索
+### 参数类型自动推断
 
-```bash
-mp.py search "流浪地球"                # 综合搜索
-mp.py search "三体" --type tv          # 只看电视剧
-mp.py search "复仇者" --type movie --limit 5
-```
-
-### 订阅
-
-```bash
-mp.py subscribe-add 535167 --type movie              # 订阅电影
-mp.py subscribe-add 218642 --type tv --season 1      # 订阅电视剧第 1 季
-mp.py subscribe-list                                 # 默认每页 30
-mp.py subscribe-list --keyword 三体                   # 按名字过滤
-mp.py subscribe-list --type tv --page 2 --limit 20   # 翻页
-mp.py subscribe-del 29                               # 取消订阅 id=29
-```
-
-> tmdbid 来自 `search` 结果中的 `tmdb_id` 字段。建议先 search、再 subscribe-add，避免订错条目。
-
-### 下载与入库
-
-```bash
-mp.py downloads                              # 默认 limit 20
-mp.py downloads --state downloading          # 只看正在下的
-mp.py downloads --keyword 三体                # 按关键词过滤
-mp.py history --page 1 --count 20            # 最近 20 条入库记录
-```
-
-### 插件
-
-```bash
-mp.py plugins                                # 列出已安装插件
-```
-
-### 万能逃生口
-
-任何上面没封装的接口，都可以用 `raw` 直接调用 MoviePilot 的 v2 REST API：
-
-```bash
-# GET 请求
-mp.py raw GET /dashboard/statistic
-
-# POST 请求 + JSON body
-mp.py raw POST /subscribe/ --json '{"name":"流浪地球","tmdbid":535167,"type":"电影"}'
-```
-
----
-
-## 🗂 项目结构
-
-```
-moviepilot/
-├── SKILL.md            # OpenClaw skill 清单 + 给 agent 的中文使用规则
-├── README.md           # 本文件
-├── .gitignore          # 排除 config.json / jwt.json
-└── scripts/
-    └── mp.py           # 主 CLI（零依赖，Python 标准库）
-```
-
-运行时还会生成（被 .gitignore 忽略）：
-
-```
-├── config.json         # 你的连接信息（chmod 600）
-└── jwt.json            # JWT 缓存（仅账号密码模式下生成）
-```
+| 写法 | 推断为 |
+| --- | --- |
+| `key=true` / `key=false` | bool |
+| `key=null` | null |
+| `key=42` / `key=3.14` | int / float |
+| `key=[1,2,3]` / `key={"a":1}` | JSON |
+| `key=任意文本` | string |
 
 ---
 
 ## 🤖 Agent 行为约束
 
-`SKILL.md` 中已经写入以下规则，OpenClaw agent 会严格遵守：
+`SKILL.md` 中已写入以下规则，OpenClaw agent 会严格遵守：
 
-1. **首次必须先绑定**：未配置时不会执行任何其他子命令
-2. **订阅前必须先 search**：拿到准确的 `tmdb_id` 再调用 `subscribe-add`，避免订错
-3. **不可逆操作必须确认**：例如 `subscribe-del` 会先告知你要删的订阅名+id 再执行
-4. **凭据零回显**：永远不会把 token / 密码 / config.json 内容贴回对话或日志
-5. **报错原文展示**：遇到错误把 stderr 直接给你，不会编造修复方案
-6. **结果中文汇报**：JSON 结果会被翻译为中文摘要，不会刷屏
+1. **首次必须先绑定**：未配置时不会调用任何 MCP 工具
+2. **调用前必须先 `show`**：参数名不能猜，每次调用前都查 schema
+3. **搜索 → 检查 → 订阅/下载**：加订阅或下载前先查库存和已有订阅，避免重复
+4. **不可逆操作必须确认**：`delete_*`、`update_site_cookie`、`run_scheduler` 等先告知再执行
+5. **种子下载多步交互**：`search_torrents` 后停下让用户选 filter，不自作主张
+6. **凭据零回显**：永远不会把 API key / 密码 / config 内容贴回对话或日志
+7. **结果中文汇报**：JSON 结果会被翻译为中文摘要，不会刷屏
+
+---
+
+## 💡 Token 优化
+
+本 skill 在多个层面控制 context 消耗：
+
+1. **`list` 输出精简**：每个工具只回 `name + 描述首句`（截到 140 字），40 个工具一次拉取约 2.5k tokens
+2. **`show` 按需调用**：只在 agent 真要用某工具前查参数，单次约 600 tokens
+3. **过载预警**：`call` 返回的结果超过 8000 字符时，stderr 自动打印 `# token-warning`，agent 看到会自动收窄过滤条件
+4. **指导 agent 优先用过滤参数**：`status=`、`type=`、`keyword=` 等，避免一次拉全量
+5. **数量类问题先看 total**：用户问"我订了多少"时，agent 只读 total 字段而不是把全部条目列出来
+
+实测：常见对话稳定在 **2 – 5k tokens / 轮次**。
 
 ---
 
 ## 🐛 常见问题
 
 **Q: 提示 `MoviePilot is not configured yet`？**
-A: 还没有绑定。运行 `mp.py configure ...` 或者让 agent 引导你绑定。
+A: 还没绑定。运行 `mp.py configure ...` 或让 agent 引导你。
 
-**Q: 用账号密码登录失败？**
-A: MoviePilot 默认要求用户名而非邮箱。可以先在浏览器登录验证一下凭据正确，再用 `mp.py configure` 重试。
+**Q: 提示 `MCP tools require an API key`？**
+A: 你用的是用户密码模式。重新运行 `mp.py configure --url ... --api-token ...`。MCP 端点只接受 API Key 认证。
 
-**Q: token 模式 401？**
-A: 在 MoviePilot 设置 → 系统 → API 令牌 重新生成一个并重新 `configure`。
+**Q: 我的 MoviePilot 没有 `/api/v1/mcp/tools` 端点？**
+A: 升级到支持 MCP 的 MoviePilot v2 版本。绝大多数近期版本都支持。
 
-**Q: 怎么看子命令完整帮助？**
-A: `python3 mp.py <子命令> --help`
+**Q: 工具数量比官方少？**
+A: 不同 MoviePilot 版本/插件配置下数量略有差异。运行 `mp.py list` 查看你这台实例的实际数量。
 
-**Q: agent 没触发这个 skill？**
-A: 确认目录在 `~/.openclaw/skills/moviepilot/` 且 `SKILL.md` 存在，然后重启 openclaw agent。
+**Q: 怎么看某个工具支持哪些参数？**
+A: `mp.py show <tool_name>`，会列出每个参数的类型、是否必需、描述、枚举值和默认值。
 
 ---
 
 ## 🛣 路线图
 
-- [ ] 手动触发整理 / 重新刮削
-- [ ] 站点签到状态查询
-- [ ] 订阅日历视图
-- [ ] 批量订阅（从豆瓣片单导入）
-- [ ] 支持 HTTPS 自签证书的 MoviePilot 实例
+- [ ] 添加 `call --json '{...}'` 一次性传完整参数体
+- [ ] 添加 `call --dry-run` 只显示请求不执行
+- [ ] 内置常见 workflow 别名（"search-and-subscribe"、"daily-digest"）
+- [ ] 多实例支持（一次绑多台 MP）
 
 欢迎提 issue / PR。
 
