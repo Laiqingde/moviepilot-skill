@@ -214,23 +214,41 @@ def cmd_subscribe_add(a):
 
 def cmd_subscribe_list(a):
     res = request("GET", "/subscribe/")
-    if isinstance(res, list):
-        slim = [
-            {
-                "id": r.get("id"),
-                "name": r.get("name"),
-                "year": r.get("year"),
-                "type": r.get("type"),
-                "season": r.get("season"),
-                "tmdbid": r.get("tmdbid"),
-                "vote": r.get("vote"),
-                "state": r.get("state"),
-            }
-            for r in res
-        ]
-        out(slim)
-    else:
+    if not isinstance(res, list):
         out(res)
+        return
+    items = res
+    if a.type:
+        want = "电影" if a.type == "movie" else "电视剧"
+        items = [r for r in items if r.get("type") == want]
+    if a.keyword:
+        kw = a.keyword.lower()
+        items = [r for r in items if kw in (r.get("name") or "").lower()]
+    if a.state:
+        items = [r for r in items if (r.get("state") or "") == a.state]
+    total = len(items)
+    page = max(1, a.page)
+    start = (page - 1) * a.limit
+    page_items = items[start : start + a.limit]
+    slim = [
+        {
+            "id": r.get("id"),
+            "name": r.get("name"),
+            "year": r.get("year"),
+            "type": r.get("type"),
+            "season": r.get("season"),
+            "tmdbid": r.get("tmdbid"),
+            "state": r.get("state"),
+        }
+        for r in page_items
+    ]
+    out({
+        "total": total,
+        "page": page,
+        "limit": a.limit,
+        "returned": len(slim),
+        "items": slim,
+    })
 
 
 def cmd_subscribe_del(a):
@@ -239,25 +257,34 @@ def cmd_subscribe_del(a):
 
 def cmd_downloads(a):
     res = request("GET", "/download/")
-    if isinstance(res, list):
-        slim = [
-            {
-                "title": r.get("title"),
-                "name": r.get("name"),
-                "season_episode": r.get("season_episode"),
-                "progress": round(float(r.get("progress") or 0), 3),
-                "state": r.get("state"),
-                "dlspeed": r.get("dlspeed"),
-                "upspeed": r.get("upspeed"),
-                "size_mb": round((r.get("size") or 0) / 1024 / 1024, 1),
-                "downloader": r.get("downloader"),
-                "hash": r.get("hash"),
-            }
-            for r in res
-        ]
-        out(slim)
-    else:
+    if not isinstance(res, list):
         out(res)
+        return
+    items = res
+    if a.state:
+        items = [r for r in items if (r.get("state") or "") == a.state]
+    if a.keyword:
+        kw = a.keyword.lower()
+        items = [
+            r for r in items
+            if kw in (r.get("name") or "").lower()
+            or kw in (r.get("title") or "").lower()
+        ]
+    total = len(items)
+    items = items[: a.limit]
+    slim = [
+        {
+            "name": r.get("name"),
+            "season_episode": r.get("season_episode"),
+            "progress": round(float(r.get("progress") or 0), 3),
+            "state": r.get("state"),
+            "dlspeed": r.get("dlspeed"),
+            "size_mb": round((r.get("size") or 0) / 1024 / 1024, 1),
+            "hash": (r.get("hash") or "")[:12],
+        }
+        for r in items
+    ]
+    out({"total": total, "returned": len(slim), "limit": a.limit, "items": slim})
 
 
 def cmd_history(a):
@@ -320,14 +347,22 @@ def main():
     s.add_argument("--name")
     s.set_defaults(func=cmd_subscribe_add)
 
-    s = sub.add_parser("subscribe-list", help="list subscriptions")
+    s = sub.add_parser("subscribe-list", help="list subscriptions (paged + filtered)")
+    s.add_argument("--limit", type=int, default=30)
+    s.add_argument("--page", type=int, default=1)
+    s.add_argument("--type", choices=["movie", "tv"])
+    s.add_argument("--keyword")
+    s.add_argument("--state", help="filter by state, e.g. R/N/P")
     s.set_defaults(func=cmd_subscribe_list)
 
     s = sub.add_parser("subscribe-del", help="delete a subscription")
     s.add_argument("id")
     s.set_defaults(func=cmd_subscribe_del)
 
-    s = sub.add_parser("downloads", help="show active downloads")
+    s = sub.add_parser("downloads", help="show active downloads (paged + filtered)")
+    s.add_argument("--limit", type=int, default=20)
+    s.add_argument("--state", help="downloading|stalledDL|pausedDL|...")
+    s.add_argument("--keyword")
     s.set_defaults(func=cmd_downloads)
 
     s = sub.add_parser("history", help="show transfer/library history")

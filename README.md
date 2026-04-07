@@ -146,7 +146,9 @@ mp.py search "复仇者" --type movie --limit 5
 ```bash
 mp.py subscribe-add 535167 --type movie              # 订阅电影
 mp.py subscribe-add 218642 --type tv --season 1      # 订阅电视剧第 1 季
-mp.py subscribe-list                                 # 查看当前订阅
+mp.py subscribe-list                                 # 默认每页 30
+mp.py subscribe-list --keyword 三体                   # 按名字过滤
+mp.py subscribe-list --type tv --page 2 --limit 20   # 翻页
 mp.py subscribe-del 29                               # 取消订阅 id=29
 ```
 
@@ -155,7 +157,9 @@ mp.py subscribe-del 29                               # 取消订阅 id=29
 ### 下载与入库
 
 ```bash
-mp.py downloads                              # 当前所有下载任务
+mp.py downloads                              # 默认 limit 20
+mp.py downloads --state downloading          # 只看正在下的
+mp.py downloads --keyword 三体                # 按关键词过滤
 mp.py history --page 1 --count 20            # 最近 20 条入库记录
 ```
 

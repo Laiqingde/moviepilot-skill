@@ -72,12 +72,14 @@ python3 {baseDir}/scripts/mp.py search "流浪地球" [--type movie|tv] [--limit
 python3 {baseDir}/scripts/mp.py subscribe-add 535167 --type movie
 python3 {baseDir}/scripts/mp.py subscribe-add 218642 --type tv --season 1
 
-# 3. 订阅列表 / 删除
-python3 {baseDir}/scripts/mp.py subscribe-list
+# 3. 订阅列表 / 删除（默认每页 30，支持过滤，避免一次拉爆 context）
+python3 {baseDir}/scripts/mp.py subscribe-list [--limit 30] [--page 1] \
+    [--type movie|tv] [--keyword 三体] [--state R]
 python3 {baseDir}/scripts/mp.py subscribe-del 29
 
-# 4. 当前下载任务
-python3 {baseDir}/scripts/mp.py downloads
+# 4. 当前下载任务（默认 limit 20，支持按状态/关键词过滤）
+python3 {baseDir}/scripts/mp.py downloads [--limit 20] \
+    [--state downloading|stalledDL|pausedDL] [--keyword 三体]
 
 # 5. 入库 / 整理历史
 python3 {baseDir}/scripts/mp.py history [--page 1] [--count 20]
@@ -89,6 +91,14 @@ python3 {baseDir}/scripts/mp.py plugins
 python3 {baseDir}/scripts/mp.py raw GET /dashboard/statistic
 python3 {baseDir}/scripts/mp.py raw POST /subscribe/ --json '{"name":"x","tmdbid":1,"type":"电影"}'
 ```
+
+## Token efficiency
+
+- `subscribe-list` 和 `downloads` 都是分页的。**永远不要为了"看全部"而把 limit 调到很大**——
+  先用默认 limit 看 `total`，再按需 `--keyword` / `--type` / `--state` 过滤，或翻 `--page`。
+- 用户问"我订了什么《三体》" → `subscribe-list --keyword 三体`，不要全量拉。
+- 用户问"现在在下什么" → `downloads --state downloading`，不要全量拉。
+- 用户问"全部订阅有多少" → 直接看返回里的 `total` 字段，不要为了数数翻完所有页。
 
 ## Workflow rules
 
